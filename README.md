@@ -13,9 +13,17 @@ Java 语言
 
 ## 使用方式
 
-1. `python scripts/run_nqueens_benchmarks.py`
+1. clone 仓库（包含子模块）：
+   ```bash
+   git clone --recurse-submodules git@github.com:Augists/nqueensBenchmarkDDs.git
+   ```
+   若忘记加 `--recurse-submodules`，clone 后可执行：
+   ```bash
+   git submodule update --init --recursive
+   ```
+2. `python scripts/run_nqueens_benchmarks.py`
    - 默认测试 N=4~12，若二进制尚未编译会自动构建
    - 常用参数：`--sizes 8 9 10` 控制规模；`--workers 0` 让 Sylvan/JSylvan 自动检测核心数（默认即 0）
    - 结果会输出到 `results/nqueens_metrics.csv`
-2. 如需绘图：`python scripts/plot_nqueens_results.py --input results/nqueens_metrics.csv --output results`
+3. 如需绘图：`python scripts/plot_nqueens_results.py --input results/nqueens_metrics.csv --output results`
    - 会生成 `nqueens_time_sec.png`、`nqueens_max_rss_kb.png`、`nqueens_nodes.png`
