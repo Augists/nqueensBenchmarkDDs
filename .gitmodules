@@ -1,0 +1,15 @@
+[submodule "BuDDy"]
+	path = BuDDy
+	url = git@github.com:Augists/BuDDy.git
+[submodule "sylvan"]
+	path = sylvan
+	url = git@github.com:Augists/sylvan.git
+[submodule "cudd"]
+	path = cudd
+	url = git@github.com:Augists/cudd.git
+[submodule "jdd"]
+	path = jdd
+	url = git@github.com:Augists/jdd.git
+[submodule "jsylvan"]
+	path = jsylvan
+	url = git@github.com:Augists/jsylvan.git
