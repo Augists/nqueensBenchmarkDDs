@@ -62,7 +62,7 @@ def ensure_buddy():
 
 
 def ensure_sylvan():
-    binary = ROOT / "sylvan" / "build" / "examples" / "nqueens"
+    binary = ROOT / "sylvan" / "build" / "examples" / "nqueens_fast"
     if binary.exists():
         return
     run([
@@ -76,7 +76,7 @@ def ensure_sylvan():
     run([
         "cmake",
         "--build", "sylvan/build",
-        "--target", "nqueens",
+        "--target", "nqueens_fast",
         f"-j{JOBS}",
     ])
 
@@ -133,9 +133,6 @@ def ensure_jsylvan():
     if pkg_config:
         env_with_pkg["PKG_CONFIG"] = pkg_config
         env_with_pkg["PKG_CONFIG_EXECUTABLE"] = pkg_config
-    else:
-        env_with_pkg.setdefault("PKG_CONFIG", "true")
-        env_with_pkg.setdefault("PKG_CONFIG_EXECUTABLE", "true")
 
     native_lib = ROOT / "jsylvan" / "src" / "main" / "resources" / "linux-x64" / "libsylvan-java.so"
     if not native_lib.exists():
@@ -282,9 +279,8 @@ def main():
             "C",
             ensure_sylvan,
             lambda size, workers: [
-                str(ROOT / "sylvan" / "build" / "examples" / "nqueens"),
+                str(ROOT / "sylvan" / "build" / "examples" / "nqueens_fast"),
                 "-w", str(workers),
-                "--report-stats",
                 str(size),
             ],
             workdir=ROOT,
