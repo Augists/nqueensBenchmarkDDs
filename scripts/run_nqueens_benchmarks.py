@@ -46,14 +46,17 @@ def run(cmd, cwd=ROOT, env=None):
 
 def ensure_buddy():
     exe = ROOT / "BuDDy" / "examples" / "queen" / "queen"
-    if exe.exists():
-        return
+    lib = ROOT / "BuDDy" / "src" / "libbdd.la"
     buddy_dir = ROOT / "BuDDy"
     configure_script = buddy_dir / "configure"
     if configure_script.exists() and not os.access(configure_script, os.X_OK):
         configure_script.chmod(configure_script.stat().st_mode | 0o111)
     if not (buddy_dir / "config.status").exists():
         run(["./configure"], cwd=buddy_dir)
+    if not lib.exists():
+        run(["make"], cwd=buddy_dir)
+    if not exe.exists():
+        run(["make", "-C", "examples/queen", "queen"], cwd=buddy_dir)
     run(["make", "-C", "examples/queen", "queen"], cwd=buddy_dir)
 
 
@@ -86,16 +89,17 @@ def ensure_cudd():
             configure_script.chmod(configure_script.stat().st_mode | 0o111)
         if not (cudd_dir / "config.status").exists():
             run(["./configure"], cwd=cudd_dir)
-        build_env = os.environ.copy()
-        build_env.update({
-            "ACLOCAL": "true",
-            "AUTOMAKE": "true",
-            "AUTOCONF": "true",
-            "AUTOHEADER": "true",
-        })
-        run(["make", f"-j{JOBS}"], cwd=cudd_dir, env=build_env)
+        run([
+            "make",
+            f"-j{JOBS}",
+            "ACLOCAL=true",
+            "AUTOMAKE=true",
+            "AUTOCONF=true",
+            "AUTOHEADER=true",
+        ], cwd=cudd_dir)
     exe = ROOT / "cudd" / "bin" / "nqueens_bdd"
     if not exe.exists():
+        (ROOT / "cudd" / "bin").mkdir(parents=True, exist_ok=True)
         run([
             "gcc",
             "-O3",
