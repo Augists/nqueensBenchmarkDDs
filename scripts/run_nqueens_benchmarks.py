@@ -6,6 +6,7 @@ import multiprocessing as mp
 import os
 import re
 import resource
+import shutil
 import shlex
 import subprocess
 import sys
@@ -127,6 +128,15 @@ def ensure_jdd():
 
 
 def ensure_jsylvan():
+    env_with_pkg = os.environ.copy()
+    pkg_config = shutil.which("pkg-config")
+    if pkg_config:
+        env_with_pkg["PKG_CONFIG"] = pkg_config
+        env_with_pkg["PKG_CONFIG_EXECUTABLE"] = pkg_config
+    else:
+        env_with_pkg.setdefault("PKG_CONFIG", "true")
+        env_with_pkg.setdefault("PKG_CONFIG_EXECUTABLE", "true")
+
     native_lib = ROOT / "jsylvan" / "src" / "main" / "resources" / "linux-x64" / "libsylvan-java.so"
     if not native_lib.exists():
         build_script = ROOT / "jsylvan" / "src" / "main" / "c" / "sylvan-java" / "build-sylvan.sh"
@@ -136,7 +146,7 @@ def ensure_jsylvan():
             "./src/main/c/sylvan-java/build-sylvan.sh",
             "https://github.com/trolando/sylvan.git",
             "v1.4.1",
-        ], cwd=ROOT / "jsylvan")
+        ], cwd=ROOT / "jsylvan", env=env_with_pkg)
     jar = ROOT / "jsylvan" / "target" / "sylvan-1.0.0-SNAPSHOT.jar"
     if not jar.exists():
         run(["mvn", "-q", "-DskipTests", "package"], cwd=ROOT / "jsylvan")
