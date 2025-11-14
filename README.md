@@ -10,6 +10,14 @@ Java 语言
 2. JSylvan
 3. NDD
 
+## results
+
+![](results/nqueens_time_sec.png)
+
+![](results/nqueens_nodes.png)
+
+![](results/nqueens_max_rss_kb.png)
+
 ## 使用方式
 
 ### 依赖
