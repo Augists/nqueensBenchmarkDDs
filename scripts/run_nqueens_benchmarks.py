@@ -146,7 +146,14 @@ def ensure_jsylvan():
         ], cwd=ROOT / "jsylvan", env=env_with_pkg)
     jar = ROOT / "jsylvan" / "target" / "sylvan-1.0.0-SNAPSHOT.jar"
     if not jar.exists():
-        run(["mvn", "-q", "-DskipTests", "package"], cwd=ROOT / "jsylvan")
+        run(["mvn", "-q", "-DskipTests", "package"], cwd=ROOT / "jsylvan", env=env_with_pkg)
+
+
+def ensure_ndd():
+    jar = ROOT / "NDD" / "target" / "ndd-1.0.1-jar-with-dependencies.jar"
+    if jar.exists():
+        return
+    run(["mvn", "-q", "-DskipTests", "package"], cwd=ROOT / "NDD")
 
 
 def execute_with_metrics(cmd, cwd, env):
@@ -258,12 +265,17 @@ def parse_args():
         default=RESULTS_DIR / "nqueens_metrics.csv",
         help="Output CSV path (default: results/nqueens_metrics.csv)",
     )
+    parser.add_argument(
+        "--targets",
+        nargs="+",
+        default=["all"],
+        help="Which implementations to run (default: all). Example: --targets BuDDy Sylvan JSylvan",
+    )
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-    implementations = [
+def build_implementations():
+    return [
         Implementation(
             "BuDDy",
             "C",
@@ -319,14 +331,46 @@ def main():
             ],
             workdir=ROOT / "jsylvan",
         ),
+        Implementation(
+            "NDD",
+            "Java",
+            ensure_ndd,
+            lambda size, _: [
+                "java",
+                "-cp", str(ROOT / "NDD" / "target" / "ndd-1.0.1-jar-with-dependencies.jar"),
+                "application.nqueen.NDDSolution",
+                str(size),
+            ],
+            workdir=ROOT / "NDD",
+        ),
     ]
 
-    for impl in implementations:
+
+def main():
+    args = parse_args()
+    available_impls = build_implementations()
+    impl_map = {impl.name.lower(): impl for impl in available_impls}
+    requested = [t.lower() for t in args.targets]
+    if requested == ["all"]:
+        selected_impls = available_impls
+    else:
+        missing = [t for t in requested if t not in impl_map]
+        if missing:
+            raise ValueError(f"Unknown implementations requested: {', '.join(missing)}. Available: {', '.join(impl_map.keys())}")
+        seen = set()
+        selected_impls = []
+        for name in requested:
+            if name in seen:
+                continue
+            seen.add(name)
+            selected_impls.append(impl_map[name])
+
+    for impl in selected_impls:
         impl.ensure_ready()
 
     rows = []
     for size in args.sizes:
-        for impl in implementations:
+        for impl in selected_impls:
             rows.append(run_implementation(impl, size, args.workers))
 
     write_results(rows, args.output)

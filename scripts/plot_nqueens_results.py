@@ -59,7 +59,7 @@ def main():
 
     plot_metric(rows, "time_sec", "Runtime (s)", args.output)
     plot_metric(rows, "max_rss_kb", "Peak RSS (KB)", args.output)
-    plot_metric(rows, "nodes", "BDD nodes created", args.output)
+    plot_metric(rows, "nodes", "Nodes created", args.output)
 
 
 if __name__ == "__main__":

@@ -13,3 +13,6 @@
 [submodule "jsylvan"]
 	path = jsylvan
 	url = git@github.com:Augists/jsylvan.git
+[submodule "NDD"]
+	path = NDD
+	url = git@github.com:Augists/NDD.git
