@@ -151,6 +151,20 @@ def ensure_jsylvan():
 
 def ensure_ndd():
     jar = ROOT / "NDD" / "target" / "ndd-1.0.1-jar-with-dependencies.jar"
+    jdd_jar = ROOT / "NDD" / "lib" / "jdd-111.jar"
+    if not jdd_jar.exists():
+        raise FileNotFoundError(f"Missing NDD dependency {jdd_jar}")
+    # Ensure local Maven repo has the JDD artifact
+    run([
+        "mvn",
+        "-q",
+        "install:install-file",
+        f"-Dfile={jdd_jar}",
+        "-DgroupId=org.bitbucket.vahidi",
+        "-DartifactId=JDD",
+        "-Dversion=111",
+        "-Dpackaging=jar",
+    ], cwd=ROOT / "NDD")
     if jar.exists():
         return
     run(["mvn", "-q", "-DskipTests", "package"], cwd=ROOT / "NDD")
