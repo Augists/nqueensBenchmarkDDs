@@ -16,3 +16,6 @@
 [submodule "NDD"]
 	path = NDD
 	url = git@github.com:Augists/NDD.git
+[submodule "DecisionDiagrams"]
+	path = DecisionDiagrams
+	url = git@github.com:Augists/DecisionDiagrams.git

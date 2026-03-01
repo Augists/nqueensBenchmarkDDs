@@ -25,7 +25,8 @@ def read_rows(csv_path):
         row["size"] = int(row["size"])
         row["time_sec"] = float(row["time_sec"])
         row["max_rss_kb"] = int(row["max_rss_kb"])
-        row["nodes"] = int(row["nodes"])
+        row["nodes_created"] = int(row["nodes_created"])
+        row["nodes_alive"] = int(row["nodes_alive"])
         row["solutions"] = float(row["solutions"])
     return rows
 
@@ -59,7 +60,8 @@ def main():
 
     plot_metric(rows, "time_sec", "Runtime (s)", args.output)
     plot_metric(rows, "max_rss_kb", "Peak RSS (KB)", args.output)
-    plot_metric(rows, "nodes", "Nodes created", args.output)
+    plot_metric(rows, "nodes_created", "Nodes created (total)", args.output)
+    plot_metric(rows, "nodes_alive", "Nodes alive (final)", args.output)
 
 
 if __name__ == "__main__":

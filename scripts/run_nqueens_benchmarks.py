@@ -2,7 +2,6 @@
 
 import argparse
 import csv
-import multiprocessing as mp
 import os
 import re
 import resource
@@ -46,39 +45,32 @@ def run(cmd, cwd=ROOT, env=None):
 
 
 def ensure_buddy():
-    exe = ROOT / "BuDDy" / "examples" / "queen" / "queen"
-    lib = ROOT / "BuDDy" / "src" / "libbdd.la"
     buddy_dir = ROOT / "BuDDy"
     configure_script = buddy_dir / "configure"
     if configure_script.exists() and not os.access(configure_script, os.X_OK):
         configure_script.chmod(configure_script.stat().st_mode | 0o111)
     if not (buddy_dir / "config.status").exists():
         run(["./configure"], cwd=buddy_dir)
-    if not lib.exists():
+    if not (buddy_dir / "src" / "libbdd.la").exists():
         run(["make"], cwd=buddy_dir)
-    if not exe.exists():
-        run(["make", "-C", "examples/queen", "queen"], cwd=buddy_dir)
+    # Clean and rebuild the queen example
+    run(["make", "-C", "examples/queen", "clean"], cwd=buddy_dir)
     run(["make", "-C", "examples/queen", "queen"], cwd=buddy_dir)
 
 
 def ensure_sylvan():
-    binary = ROOT / "sylvan" / "build" / "examples" / "nqueens_fast"
-    if binary.exists():
-        return
-    run([
-        "cmake",
-        "-S", "sylvan",
-        "-B", "sylvan/build",
-        "-DSYLVAN_STATS=ON",
-        "-DBUILD_SHARED_LIBS=OFF",
-        "-DCMAKE_BUILD_TYPE=Release",
-    ])
-    run([
-        "cmake",
-        "--build", "sylvan/build",
-        "--target", "nqueens_fast",
-        f"-j{JOBS}",
-    ])
+    build_dir = ROOT / "sylvan" / "build"
+    if not (build_dir / "CMakeCache.txt").exists():
+        run([
+            "cmake",
+            "-S", "sylvan",
+            "-B", "sylvan/build",
+            "-DSYLVAN_STATS=ON",
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DCMAKE_BUILD_TYPE=Release",
+        ])
+    # Clean and rebuild nqueens_fast
+    run(["cmake", "--build", "sylvan/build", "--target", "nqueens_fast", "--clean-first", f"-j{JOBS}"])
 
 
 def ensure_cudd():
@@ -98,33 +90,33 @@ def ensure_cudd():
             "AUTOCONF=true",
             "AUTOHEADER=true",
         ], cwd=cudd_dir)
+    # Clean and rebuild nqueens_bdd
     exe = ROOT / "cudd" / "bin" / "nqueens_bdd"
-    if not exe.exists():
-        (ROOT / "cudd" / "bin").mkdir(parents=True, exist_ok=True)
-        run([
-            "gcc",
-            "-O3",
-            "-I./cudd",
-            "-I./cudd/cudd",
-            "-I./cudd/mtr",
-            "-I./cudd/st",
-            "-I./cudd/util",
-            "-I./cudd/epd",
-            "-o", "cudd/bin/nqueens_bdd",
-            "cudd/examples/nqueens_bdd.c",
-            "cudd/cudd/.libs/libcudd.a",
-            "-lm",
-        ])
+    if exe.exists():
+        exe.unlink()
+    (ROOT / "cudd" / "bin").mkdir(parents=True, exist_ok=True)
+    run([
+        "gcc",
+        "-O3",
+        "-I./cudd",
+        "-I./cudd/cudd",
+        "-I./cudd/mtr",
+        "-I./cudd/st",
+        "-I./cudd/util",
+        "-I./cudd/epd",
+        "-o", "cudd/bin/nqueens_bdd",
+        "cudd/examples/nqueens_bdd.c",
+        "cudd/cudd/.libs/libcudd.a",
+        "-lm",
+    ])
 
 
 def ensure_jdd():
-    classes_flag = ROOT / "jdd" / "build" / "classes" / "java" / "main" / "jdd" / "examples" / "BDDQueens.class"
-    if classes_flag.exists():
-        return
     gradlew = ROOT / "jdd" / "gradlew"
     if gradlew.exists() and not os.access(gradlew, os.X_OK):
         gradlew.chmod(gradlew.stat().st_mode | 0o111)
-    run(["./gradlew", "--no-daemon", "classes"], cwd=ROOT / "jdd")
+    # Clean and rebuild
+    run(["./gradlew", "--no-daemon", "clean", "classes"], cwd=ROOT / "jdd")
 
 
 def ensure_jsylvan():
@@ -144,13 +136,11 @@ def ensure_jsylvan():
             "https://github.com/trolando/sylvan.git",
             "v1.4.1",
         ], cwd=ROOT / "jsylvan", env=env_with_pkg)
-    jar = ROOT / "jsylvan" / "target" / "sylvan-1.0.0-SNAPSHOT.jar"
-    if not jar.exists():
-        run(["mvn", "-q", "-DskipTests", "package"], cwd=ROOT / "jsylvan", env=env_with_pkg)
+    # Clean and rebuild
+    run(["mvn", "-q", "-DskipTests", "clean", "package"], cwd=ROOT / "jsylvan", env=env_with_pkg)
 
 
 def ensure_ndd():
-    jar = ROOT / "NDD" / "target" / "ndd-1.0.1-jar-with-dependencies.jar"
     jdd_jar = ROOT / "NDD" / "lib" / "jdd-111.jar"
     if not jdd_jar.exists():
         raise FileNotFoundError(f"Missing NDD dependency {jdd_jar}")
@@ -165,46 +155,62 @@ def ensure_ndd():
         "-Dversion=111",
         "-Dpackaging=jar",
     ], cwd=ROOT / "NDD")
-    if jar.exists():
-        return
-    run(["mvn", "-q", "-DskipTests", "package"], cwd=ROOT / "NDD")
+    # Clean and rebuild
+    run(["mvn", "-q", "-DskipTests", "clean", "package"], cwd=ROOT / "NDD")
 
+
+def ensure_decisiondiagrams():
+    dd_dir = ROOT / "DecisionDiagrams"
+    # Check if dotnet is available
+    if not shutil.which("dotnet"):
+        raise RuntimeError("dotnet SDK is not installed. Install it with: sudo pacman -S dotnet-sdk-6.0")
+    # Clean and rebuild
+    run(["dotnet", "clean", "-c", "Release", "DecisionDiagrams.sln"], cwd=dd_dir)
+    run(["dotnet", "build", "-c", "Release", "DecisionDiagrams.sln"], cwd=dd_dir)
+
+
+MAX_TIMEOUT = 300   # 5 minute hard timeout per run
+MAX_RETRIES = 3     # retry on timeout (handles Lace/Sylvan intermittent hangs)
 
 def execute_with_metrics(cmd, cwd, env):
-    queue = mp.Queue()
+    """Execute command and measure time/memory. Retries on timeout."""
+    last_exc = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            start_time = time.perf_counter()
+            proc = subprocess.run(
+                cmd,
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=MAX_TIMEOUT,
+            )
+            elapsed_time = time.perf_counter() - start_time
 
-    def worker():
-        start = time.perf_counter()
-        proc = subprocess.run(
-            cmd,
-            cwd=cwd,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        elapsed = time.perf_counter() - start
-        usage = resource.getrusage(resource.RUSAGE_CHILDREN)
-        queue.put({
-            "returncode": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "elapsed": elapsed,
-            "max_rss": usage.ru_maxrss,
-            "cmd": cmd,
-        })
+            usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+            max_rss = usage.ru_maxrss
 
-    process = mp.Process(target=worker)
-    process.start()
-    process.join()
-    if not process.exitcode == 0:
-        raise RuntimeError("Measurement helper failed")
-    if queue.empty():
-        raise RuntimeError("Measurement helper returned no data")
-    return queue.get()
+            return {
+                "returncode": proc.returncode,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "elapsed": elapsed_time,
+                "max_rss": max_rss,
+                "cmd": cmd,
+            }
+        except subprocess.TimeoutExpired as e:
+            last_exc = e
+            if attempt < MAX_RETRIES:
+                print(f"[retry] Timeout on attempt {attempt}/{MAX_RETRIES}, retrying...")
+                time.sleep(2)
+    raise last_exc
 
 
-METRIC_PATTERN = re.compile(r"NQUEENS_METRICS\s+[^n]*n=(\d+)\s+[^s]*solutions=([0-9.]+)\s+[^n]*nodes=(\d+)")
+METRIC_PATTERN = re.compile(
+    r"NQUEENS_METRICS\s+n=(\d+)\s+solutions=([0-9.]+)\s+nodes_created=(\d+)\s+nodes_alive=(\d+)"
+)
 def parse_metrics(stdout):
     match = None
     for line in stdout.strip().splitlines():
@@ -215,8 +221,9 @@ def parse_metrics(stdout):
         raise RuntimeError("Failed to parse NQUEENS_METRICS from program output")
     size = int(match.group(1))
     solutions = float(match.group(2))
-    nodes = int(match.group(3))
-    return size, solutions, nodes
+    nodes_created = int(match.group(3))
+    nodes_alive = int(match.group(4))
+    return size, solutions, nodes_created, nodes_alive
 
 
 def run_implementation(impl, size, workers):
@@ -230,32 +237,38 @@ def run_implementation(impl, size, workers):
             output=result["stdout"],
             stderr=result["stderr"],
         )
-    measured_size, solutions, nodes = parse_metrics(result["stdout"])
+    measured_size, solutions, nodes_created, nodes_alive = parse_metrics(result["stdout"])
     if measured_size != size:
         raise RuntimeError(f"Implementation {impl.name} reported size {measured_size} but expected {size}")
     time_sec = result["elapsed"]
     max_rss = result["max_rss"]
-    print(f"[run] {impl.name:10s} N={size:2d} time={time_sec:7.3f}s rss={max_rss:>8d}KB nodes={nodes}")
+    print(f"[run] {impl.name:10s} N={size:2d} time={time_sec:7.3f}s rss={max_rss:>8d}KB "
+          f"created={nodes_created} alive={nodes_alive}")
     return {
         "implementation": impl.name,
         "language": impl.language,
         "size": size,
         "time_sec": time_sec,
         "max_rss_kb": max_rss,
-        "nodes": nodes,
+        "nodes_created": nodes_created,
+        "nodes_alive": nodes_alive,
         "solutions": solutions,
     }
 
 
 def write_results(rows, output_path):
     RESULTS_DIR.mkdir(exist_ok=True)
-    fieldnames = ["implementation", "language", "size", "time_sec", "max_rss_kb", "nodes", "solutions"]
+    fieldnames = ["implementation", "language", "size", "time_sec", "max_rss_kb", "nodes_created", "nodes_alive", "solutions"]
     with output_path.open("w", newline="") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
-    print(f"[done] Results saved to {output_path.relative_to(ROOT)}")
+    try:
+        display_path = output_path.relative_to(ROOT)
+    except ValueError:
+        display_path = output_path
+    print(f"[done] Results saved to {display_path}")
 
 
 def parse_args():
@@ -356,6 +369,29 @@ def build_implementations():
                 str(size),
             ],
             workdir=ROOT / "NDD",
+        ),
+        Implementation(
+            "DD-BDD",
+            "C#",
+            ensure_decisiondiagrams,
+            lambda size, _: [
+                "dotnet",
+                str(ROOT / "DecisionDiagrams" / "DecisionDiagrams.Bench" / "bin" / "Release" / "net6.0" / "DecisionDiagrams.Bench.dll"),
+                str(size),
+                "--use-bdd",
+            ],
+            workdir=ROOT / "DecisionDiagrams",
+        ),
+        Implementation(
+            "DD-CBDD",
+            "C#",
+            ensure_decisiondiagrams,
+            lambda size, _: [
+                "dotnet",
+                str(ROOT / "DecisionDiagrams" / "DecisionDiagrams.Bench" / "bin" / "Release" / "net6.0" / "DecisionDiagrams.Bench.dll"),
+                str(size),
+            ],
+            workdir=ROOT / "DecisionDiagrams",
         ),
     ]
 
