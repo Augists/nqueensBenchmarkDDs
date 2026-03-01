@@ -10,6 +10,9 @@ Java 语言
 2. JSylvan
 3. NDD
 
+C# 语言
+1. DecisionDiagrams
+
 ## results
 
 ![](results/nqueens_time_sec.png)
