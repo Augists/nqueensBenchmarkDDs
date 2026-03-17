@@ -14,6 +14,8 @@ Java 语言
 
 ![](results/nqueens_time_sec.png)
 
+![](results/nqueens_time_sec_log.png)
+
 ![](results/nqueens_nodes_created.png)
 
 ![](results/nqueens_nodes_alive.png)

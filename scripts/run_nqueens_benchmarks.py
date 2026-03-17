@@ -4,13 +4,15 @@ import argparse
 import csv
 import os
 import re
-import resource
 import shutil
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+
+import psutil
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = ROOT / "results"
@@ -44,14 +46,52 @@ def run(cmd, cwd=ROOT, env=None):
     subprocess.run(cmd, cwd=cwd, env=env, check=True)
 
 
+def _read_text_file(path):
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except FileNotFoundError:
+        return None
+
+
+def cache_paths_match_current_workspace(cache_file, expected_paths):
+    text = _read_text_file(cache_file)
+    if text is None:
+        return False
+    return all(str(path) in text for path in expected_paths)
+
+
+def heal_stale_path_cache(cache_files, expected_paths, reset_paths):
+    existing_files = [path for path in cache_files if path.exists()]
+    if not existing_files:
+        return False
+    if all(cache_paths_match_current_workspace(path, expected_paths) for path in existing_files):
+        return False
+    for path in reset_paths:
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+    return True
+
+
 def ensure_buddy():
     buddy_dir = ROOT / "BuDDy"
     configure_script = buddy_dir / "configure"
+    config_status = buddy_dir / "config.status"
+    top_makefile = buddy_dir / "Makefile"
+    src_makefile = buddy_dir / "src" / "Makefile"
+    queen_makefile = buddy_dir / "examples" / "queen" / "Makefile"
+    libbdd = buddy_dir / "src" / "libbdd.la"
     if configure_script.exists() and not os.access(configure_script, os.X_OK):
         configure_script.chmod(configure_script.stat().st_mode | 0o111)
-    if not (buddy_dir / "config.status").exists():
+    healed = heal_stale_path_cache(
+        [config_status, src_makefile, queen_makefile],
+        [buddy_dir],
+        [config_status, top_makefile, src_makefile, queen_makefile, libbdd],
+    )
+    if healed or not config_status.exists():
         run(["./configure"], cwd=buddy_dir)
-    if not (buddy_dir / "src" / "libbdd.la").exists():
+    if healed or not libbdd.exists():
         run(["make"], cwd=buddy_dir)
     # Clean and rebuild the queen example
     run(["make", "-C", "examples/queen", "clean"], cwd=buddy_dir)
@@ -60,15 +100,19 @@ def ensure_buddy():
 
 def ensure_sylvan():
     build_dir = ROOT / "sylvan" / "build"
-    if not (build_dir / "CMakeCache.txt").exists():
-        run([
-            "cmake",
-            "-S", "sylvan",
-            "-B", "sylvan/build",
-            "-DSYLVAN_STATS=ON",
-            "-DBUILD_SHARED_LIBS=OFF",
-            "-DCMAKE_BUILD_TYPE=Release",
-        ])
+    heal_stale_path_cache(
+        [build_dir / "CMakeCache.txt"],
+        [ROOT / "sylvan", build_dir],
+        [build_dir],
+    )
+    run([
+        "cmake",
+        "-S", "sylvan",
+        "-B", "sylvan/build",
+        "-DSYLVAN_STATS=ON",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DCMAKE_BUILD_TYPE=Release",
+    ])
     # Clean and rebuild nqueens_fast
     run(["cmake", "--build", "sylvan/build", "--target", "nqueens_fast", "--clean-first", f"-j{JOBS}"])
 
@@ -76,12 +120,20 @@ def ensure_sylvan():
 def ensure_cudd():
     cudd_dir = ROOT / "cudd"
     lib = cudd_dir / "cudd" / ".libs" / "libcudd.a"
-    if not lib.exists():
-        configure_script = cudd_dir / "configure"
-        if configure_script.exists() and not os.access(configure_script, os.X_OK):
-            configure_script.chmod(configure_script.stat().st_mode | 0o111)
-        if not (cudd_dir / "config.status").exists():
-            run(["./configure"], cwd=cudd_dir)
+    config_status = cudd_dir / "config.status"
+    top_makefile = cudd_dir / "Makefile"
+    cudd_makefile = cudd_dir / "cudd" / "Makefile"
+    configure_script = cudd_dir / "configure"
+    if configure_script.exists() and not os.access(configure_script, os.X_OK):
+        configure_script.chmod(configure_script.stat().st_mode | 0o111)
+    healed = heal_stale_path_cache(
+        [config_status, top_makefile, cudd_makefile],
+        [cudd_dir],
+        [config_status, top_makefile, cudd_makefile, lib],
+    )
+    if healed or not config_status.exists():
+        run(["./configure"], cwd=cudd_dir)
+    if healed or not lib.exists():
         run([
             "make",
             f"-j{JOBS}",
@@ -158,6 +210,23 @@ def ensure_ndd():
     # Clean and rebuild
     run(["mvn", "-q", "-DskipTests", "clean", "package"], cwd=ROOT / "NDD")
 
+def ensure_ndd_soa():
+    jdd_jar = ROOT / "NDD-SoA" / "lib" / "jdd-111.jar"
+    if not jdd_jar.exists():
+        raise FileNotFoundError(f"Missing NDD dependency {jdd_jar}")
+    # Ensure local Maven repo has the JDD artifact
+    run([
+        "mvn",
+        "-q",
+        "install:install-file",
+        f"-Dfile={jdd_jar}",
+        "-DgroupId=org.bitbucket.vahidi",
+        "-DartifactId=JDD",
+        "-Dversion=111",
+        "-Dpackaging=jar",
+    ], cwd=ROOT / "NDD-SoA")
+    # Clean and rebuild
+    run(["mvn", "-q", "-DskipTests", "clean", "package"], cwd=ROOT / "NDD-SoA")
 
 def ensure_decisiondiagrams():
     dd_dir = ROOT / "DecisionDiagrams"
@@ -165,6 +234,7 @@ def ensure_decisiondiagrams():
     if not shutil.which("dotnet"):
         raise RuntimeError("dotnet SDK is not installed. Install it with: sudo pacman -S dotnet-sdk-6.0")
     # Clean and rebuild
+    run(["dotnet", "restore", "DecisionDiagrams.sln"], cwd=dd_dir)
     run(["dotnet", "clean", "-c", "Release", "DecisionDiagrams.sln"], cwd=dd_dir)
     run(["dotnet", "build", "-c", "Release", "DecisionDiagrams.sln"], cwd=dd_dir)
 
@@ -172,30 +242,63 @@ def ensure_decisiondiagrams():
 MAX_TIMEOUT = 300   # 5 minute hard timeout per run
 MAX_RETRIES = 3     # retry on timeout (handles Lace/Sylvan intermittent hangs)
 
+def _poll_rss(pid, interval, result):
+    """Background thread: poll RSS of pid and its children, record peak (KB)."""
+    peak = 0
+    try:
+        proc = psutil.Process(pid)
+        while True:
+            try:
+                rss = proc.memory_info().rss
+                for child in proc.children(recursive=True):
+                    try:
+                        rss += child.memory_info().rss
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                if rss > peak:
+                    peak = rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                break
+            time.sleep(interval)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+    result["peak_rss_kb"] = peak // 1024
+
+
 def execute_with_metrics(cmd, cwd, env):
     """Execute command and measure time/memory. Retries on timeout."""
     last_exc = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            start_time = time.perf_counter()
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 cwd=cwd,
                 env=env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                check=False,
-                timeout=MAX_TIMEOUT,
             )
+
+            rss_result = {}
+            poller = threading.Thread(target=_poll_rss, args=(proc.pid, 0.05, rss_result), daemon=True)
+            poller.start()
+
+            start_time = time.perf_counter()
+            try:
+                stdout, stderr = proc.communicate(timeout=MAX_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
             elapsed_time = time.perf_counter() - start_time
 
-            usage = resource.getrusage(resource.RUSAGE_CHILDREN)
-            max_rss = usage.ru_maxrss
+            poller.join(timeout=1)
+            max_rss = rss_result.get("peak_rss_kb", 0)
 
             return {
                 "returncode": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
+                "stdout": stdout,
+                "stderr": stderr,
                 "elapsed": elapsed_time,
                 "max_rss": max_rss,
                 "cmd": cmd,
@@ -210,6 +313,7 @@ def execute_with_metrics(cmd, cwd, env):
 
 METRIC_PATTERN = re.compile(
     r"NQUEENS_METRICS\s+n=(\d+)\s+solutions=([0-9.]+)\s+nodes_created=(\d+)\s+nodes_alive=(\d+)"
+    r"(?:\s+seconds=([0-9.]+))?"
 )
 def parse_metrics(stdout):
     match = None
@@ -223,7 +327,8 @@ def parse_metrics(stdout):
     solutions = float(match.group(2))
     nodes_created = int(match.group(3))
     nodes_alive = int(match.group(4))
-    return size, solutions, nodes_created, nodes_alive
+    seconds = float(match.group(5)) if match.group(5) is not None else None
+    return size, solutions, nodes_created, nodes_alive, seconds
 
 
 def run_implementation(impl, size, workers):
@@ -237,10 +342,10 @@ def run_implementation(impl, size, workers):
             output=result["stdout"],
             stderr=result["stderr"],
         )
-    measured_size, solutions, nodes_created, nodes_alive = parse_metrics(result["stdout"])
+    measured_size, solutions, nodes_created, nodes_alive, reported_seconds = parse_metrics(result["stdout"])
     if measured_size != size:
         raise RuntimeError(f"Implementation {impl.name} reported size {measured_size} but expected {size}")
-    time_sec = result["elapsed"]
+    time_sec = reported_seconds if reported_seconds is not None else result["elapsed"]
     max_rss = result["max_rss"]
     print(f"[run] {impl.name:10s} N={size:2d} time={time_sec:7.3f}s rss={max_rss:>8d}KB "
           f"created={nodes_created} alive={nodes_alive}")
@@ -369,6 +474,18 @@ def build_implementations():
                 str(size),
             ],
             workdir=ROOT / "NDD",
+        ),
+        Implementation(
+            "NDD-SoA",                     
+            "Java",                        
+            ensure_ndd_soa,             
+            lambda size, _: [
+                "java",
+                "-cp", str(ROOT / "NDD-SoA" / "target" / "ndd-1.0.1-jar-with-dependencies.jar"), 
+                "application.nqueen.NDDSolution", 
+                str(size),
+            ],
+            workdir=ROOT / "NDD-SoA",
         ),
         Implementation(
             "DD-BDD",
