@@ -82,6 +82,18 @@ class EnsureSylvanTests(unittest.TestCase):
         self.assertIn("sylvan_set_limits(", source)
         self.assertNotIn("sylvan_set_sizes(", source)
 
+    def test_nqueens_fast_has_windows_safe_physical_memory_detection(self):
+        source = (run_nqueens_benchmarks.ROOT / "sylvan" / "examples" / "nqueens_fast.c").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("#if defined(_WIN32)", source)
+        self.assertIn("MEMORYSTATUSEX status;", source)
+        self.assertIn("GlobalMemoryStatusEx(&status)", source)
+        self.assertIn("#else", source)
+        self.assertIn("sysconf(_SC_PHYS_PAGES)", source)
+        self.assertIn("sysconf(_SC_PAGE_SIZE)", source)
+
 
 class EnsureCuddTests(unittest.TestCase):
     def test_ensure_cudd_reconfigures_and_rebuilds_when_cached_paths_are_stale(self):
