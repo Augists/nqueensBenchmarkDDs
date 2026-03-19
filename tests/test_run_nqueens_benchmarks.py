@@ -88,6 +88,9 @@ class EnsureSylvanTests(unittest.TestCase):
         )
 
         self.assertIn("#if defined(_WIN32)", source)
+        self.assertIn("#define WIN32_LEAN_AND_MEAN", source)
+        self.assertIn("#define NOGDI", source)
+        self.assertIn("#include <windows.h>", source)
         self.assertIn("MEMORYSTATUSEX status;", source)
         self.assertIn("GlobalMemoryStatusEx(&status)", source)
         self.assertIn("#else", source)
