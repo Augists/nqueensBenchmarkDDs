@@ -9,6 +9,8 @@ Java 语言
 1. jdd
 2. JSylvan
 3. NDD
+4. NDD-SoA
+4. NDD-reuse
 
 C# 语言
 1. DecisionDiagrams
@@ -17,11 +19,17 @@ C# 语言
 
 ![](results/nqueens_time_sec.png)
 
+![](results/nqueens_time_sec_log.png)
+
+![](results/nqueens_max_rss_kb.png)
+
+![](results/nqueens_max_rss_kb_log.png)
+
 ![](results/nqueens_nodes_created.png)
 
 ![](results/nqueens_nodes_alive.png)
 
-![](results/nqueens_max_rss_kb.png)
+
 
 ## 使用方式
 
@@ -57,4 +65,4 @@ sudo apt install build-essential pkg-config libgmp-dev openjdk-17-jdk python3 py
    ```bash
    python3 scripts/plot_nqueens_results.py --input results/nqueens_metrics.csv --output results
    ```
-   会生成 `nqueens_time_sec.png`、`nqueens_max_rss_kb.png`、`nqueens_nodes.png`
+   会生成 `nqueens_time_sec.png`、`results/nqueens_time_sec_log.png`、`nqueens_max_rss_kb.png`、`nqueens_nodes.png`
