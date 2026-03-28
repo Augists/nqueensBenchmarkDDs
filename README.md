@@ -1,19 +1,27 @@
 # Benchmark on all version of BDD and NDD on NQueens
 
-C 语言
-1. BuDDy
-2. sylvan
-3. cudd
-
-Java 语言
-1. jdd
-2. JSylvan
-3. NDD
-4. NDD-SoA
-4. NDD-reuse
-
-C# 语言
-1. DecisionDiagrams
+> [!NOTE]
+> **B**inary **D**ecision **D**iagram
+> 
+> - C
+> 1. BuDDy
+> 2. CUDD
+> 3. Sylvan
+> 
+> - Java
+> 1. jdd
+> 2. JSylvan
+>
+> - C#
+> 1. DecisionDiagrams-BDD
+> 2. DecisionDiagrams-CBDD
+>
+> **N**etwork **D**ecision **D**iagram
+> 
+> - Java
+> 1. NDD
+> 2. NDD-reuse
+> 3. NDD-SoA
 
 ## results
 
@@ -31,38 +39,38 @@ C# 语言
 
 
 
-## 使用方式
+## How to run benchmark
 
-### 依赖
+### Dependency
 
-在执行脚本前，需提前安装构建工具、pkg-config 以及 GMP 库。例如在 Debian/Ubuntu 上：
+Please install build tools(pkg-config and GMP) before run this script. Here takes Debian/Ubuntu as an example:
 
 ```bash
 sudo apt update
 sudo apt install build-essential pkg-config libgmp-dev openjdk-17-jdk python3 python3-pip
 ```
 
-若缺少 pkg-config 或 libgmp-dev，JSylvan/Sylvan 的构建会失败。
+Sylvan/JSylvan will build failed without pkg-config or libgmp-dev.
 
-### 步骤
+### Steps
 
-1. clone 仓库（包含子模块）：
+1. clone with submodule：
    ```bash
    git clone --recurse-submodules git@github.com:Augists/nqueensBenchmarkDDs.git
    ```
-   若忘记加 `--recurse-submodules`，clone 后可执行：
+   if forget `--recurse-submodules`，run the script below after clone:
    ```bash
    git submodule update --init --recursive
    ```
-2. 运行测试
+2. run benchmark
    ```bash
    python3 scripts/run_nqueens_benchmarks.py
    ```
-   - 默认测试 N=4~12，若二进制尚未编译会自动构建
-   - 常用参数：`--sizes 8 9 10` 控制规模；`--workers 0` 让 Sylvan/JSylvan 自动检测核心数（默认即 0）；`--targets BuDDy Sylvan NDD` 指定只运行部分实现（默认 `all`）
-   - 结果会输出到 `results/nqueens_metrics.csv`
-3. 绘图
+   - test N=4~12 by default, and will auto build binary if have not compiled
+   - parameter: `--sizes 8 9 10` for N in NQueens; `--workers 0` let Sylvan/JSylvan auto detect the number of cpu cores(0 by default); `--targets BuDDy Sylvan NDD` for only test partial libraries(`all` by default)
+   - All results will be recorded in `results/nqueens_metrics.csv`
+3. plot
    ```bash
    python3 scripts/plot_nqueens_results.py --input results/nqueens_metrics.csv --output results
    ```
-   会生成 `nqueens_time_sec.png`、`results/nqueens_time_sec_log.png`、`nqueens_max_rss_kb.png`、`nqueens_nodes.png`
+   which will generate `nqueens_time_sec.png`、`results/nqueens_time_sec_log.png`、`nqueens_max_rss_kb.png`、`nqueens_nodes.png` and else.
