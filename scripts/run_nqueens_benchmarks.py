@@ -17,6 +17,10 @@ import psutil
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = ROOT / "results"
 JOBS = max(1, os.cpu_count() or 1)
+DEFAULT_SIZES = list(range(8, 13))
+DEFAULT_TIMEOUT_SEC = 500
+JSYLVAN_MEMORY_MB = 2048
+EXCLUDED_DEFAULT_TARGETS = {"NDD-SoA-BCDD", "NDD-SoA-FD-ZDD" , "ZDD"}
 
 
 class Implementation:
@@ -112,11 +116,11 @@ def ensure_sylvan():
         "-DSYLVAN_STATS=ON",
         "-DBUILD_SHARED_LIBS=OFF",
         "-DCMAKE_BUILD_TYPE=Release",
+        "-DSYLVAN_USE_MMAP=ON",
     ])
     # Clean and rebuild nqueens_fast
     run(["cmake", "--build", "sylvan/build", "--target", "nqueens_fast", "--clean-first", f"-j{JOBS}"])
-
-
+    
 def ensure_cudd():
     cudd_dir = ROOT / "cudd"
     lib = cudd_dir / "cudd" / ".libs" / "libcudd.a"
@@ -210,6 +214,43 @@ def ensure_ndd():
     # Clean and rebuild
     run(["mvn", "-q", "-DskipTests", "clean", "package"], cwd=ROOT / "NDD")
 
+def ensure_ndd_reuse():
+    import zipfile
+    ndd_reuse_dir = ROOT / "NDD-reuse"
+    jdd_jar = ndd_reuse_dir / "lib" / "jdd-111.jar"
+    if not jdd_jar.exists():
+        raise FileNotFoundError(f"Missing NDD-reuse dependency {jdd_jar}")
+    run([
+        "mvn",
+        "-q",
+        "install:install-file",
+        f"-Dfile={jdd_jar}",
+        "-DgroupId=org.bitbucket.vahidi",
+        "-DartifactId=JDD",
+        "-Dversion=111",
+        "-Dpackaging=jar",
+    ], cwd=ndd_reuse_dir)
+    run(["mvn", "-q", "-DskipTests", "clean", "package"], cwd=ndd_reuse_dir)
+    # The maven-assembly jar-with-dependencies unpacks jdd-111.jar and its original BDD.class
+    # overwrites the patched BDD.class compiled from NDD-reuse's own jdd/bdd/BDD.java source.
+    # Patch the fat jar by replacing the affected class entries with the compiled patched versions.
+    fat_jar = ndd_reuse_dir / "target" / "ndd-1.0.1-jar-with-dependencies.jar"
+    classes_dir = ndd_reuse_dir / "target" / "classes"
+    patched_classes = {
+        cls_file.relative_to(classes_dir).as_posix(): cls_file
+        for cls_file in classes_dir.glob("jdd/**/*.class")
+    }
+    if patched_classes:
+        print(f"[patch] Replacing {len(patched_classes)} patched BDD class(es) in fat jar")
+        tmp_jar = fat_jar.with_suffix(".jar.tmp")
+        with zipfile.ZipFile(fat_jar, "r") as src, zipfile.ZipFile(tmp_jar, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+            for item in src.infolist():
+                if item.filename in patched_classes:
+                    dst.write(patched_classes[item.filename], item.filename)
+                else:
+                    dst.writestr(item, src.read(item.filename))
+        tmp_jar.replace(fat_jar)
+
 def ensure_ndd_soa():
     jdd_jar = ROOT / "NDD-SoA" / "lib" / "jdd-111.jar"
     if not jdd_jar.exists():
@@ -239,8 +280,15 @@ def ensure_decisiondiagrams():
     run(["dotnet", "build", "-c", "Release", "DecisionDiagrams.sln"], cwd=dd_dir)
 
 
-MAX_TIMEOUT = 300   # 5 minute hard timeout per run
-MAX_RETRIES = 3     # retry on timeout (handles Lace/Sylvan intermittent hangs)
+TIMEOUT_SENTINEL_METRICS = {
+    "solutions": 0.0,
+    "nodes_created": 0,
+    "nodes_alive": 0,
+    "ndd_nodes_created": 0,
+    "ndd_nodes_alive": 0,
+    "bdd_nodes_created": 0,
+    "bdd_nodes_alive": 0,
+}
 
 def _poll_rss(pid, interval, result):
     """Background thread: poll RSS of pid and its children, record peak (KB)."""
@@ -265,76 +313,109 @@ def _poll_rss(pid, interval, result):
     result["peak_rss_kb"] = peak // 1024
 
 
-def execute_with_metrics(cmd, cwd, env):
-    """Execute command and measure time/memory. Retries on timeout."""
-    last_exc = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=cwd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+def execute_with_metrics(cmd, cwd, env, timeout_sec=DEFAULT_TIMEOUT_SEC):
+    """Execute command and measure time/memory, returning a timeout result instead of retrying."""
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
-            rss_result = {}
-            poller = threading.Thread(target=_poll_rss, args=(proc.pid, 0.05, rss_result), daemon=True)
-            poller.start()
+    rss_result = {}
+    poller = threading.Thread(target=_poll_rss, args=(proc.pid, 0.05, rss_result), daemon=True)
+    poller.start()
 
-            start_time = time.perf_counter()
-            try:
-                stdout, stderr = proc.communicate(timeout=MAX_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                raise
-            elapsed_time = time.perf_counter() - start_time
+    start_time = time.perf_counter()
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
+        elapsed_time = time.perf_counter() - start_time
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        elapsed_time = timeout_sec
+        timed_out = True
 
-            poller.join(timeout=1)
-            max_rss = rss_result.get("peak_rss_kb", 0)
+    poller.join(timeout=1)
+    max_rss = rss_result.get("peak_rss_kb", 0)
 
-            return {
-                "returncode": proc.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "elapsed": elapsed_time,
-                "max_rss": max_rss,
-                "cmd": cmd,
-            }
-        except subprocess.TimeoutExpired as e:
-            last_exc = e
-            if attempt < MAX_RETRIES:
-                print(f"[retry] Timeout on attempt {attempt}/{MAX_RETRIES}, retrying...")
-                time.sleep(2)
-    raise last_exc
+    return {
+        "returncode": proc.returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "elapsed": elapsed_time,
+        "max_rss": max_rss,
+        "cmd": cmd,
+        "timed_out": timed_out,
+    }
 
 
-METRIC_PATTERN = re.compile(
-    r"NQUEENS_METRICS\s+n=(\d+)\s+solutions=([0-9.]+)\s+nodes_created=(\d+)\s+nodes_alive=(\d+)"
-    r"(?:\s+seconds=([0-9.]+))?"
-)
 def parse_metrics(stdout):
-    match = None
+    metric_line = None
     for line in stdout.strip().splitlines():
-        maybe = METRIC_PATTERN.search(line)
-        if maybe:
-            match = maybe
-    if not match:
+        if "NQUEENS_METRICS" in line:
+            metric_line = line.strip()
+    if not metric_line:
         raise RuntimeError("Failed to parse NQUEENS_METRICS from program output")
-    size = int(match.group(1))
-    solutions = float(match.group(2))
-    nodes_created = int(match.group(3))
-    nodes_alive = int(match.group(4))
-    seconds = float(match.group(5)) if match.group(5) is not None else None
-    return size, solutions, nodes_created, nodes_alive, seconds
+
+    parts = {}
+    for token in metric_line.split():
+        if token == "NQUEENS_METRICS" or "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        parts[key] = value
+
+    size = int(parts["n"])
+    solutions = float(parts["solutions"])
+    nodes_created = int(parts["nodes_created"])
+    nodes_alive = int(parts["nodes_alive"])
+    ndd_nodes_created = int(parts.get("ndd_nodes_created", 0))
+    ndd_nodes_alive = int(parts.get("ndd_nodes_alive", 0))
+    bdd_nodes_created = int(parts.get("bdd_nodes_created", nodes_created))
+    bdd_nodes_alive = int(parts.get("bdd_nodes_alive", nodes_alive))
+    if "ndd_nodes_created" not in parts and "bdd_nodes_created" not in parts:
+        ndd_nodes_created = 0
+        bdd_nodes_created = nodes_created
+    if "ndd_nodes_alive" not in parts and "bdd_nodes_alive" not in parts:
+        ndd_nodes_alive = 0
+        bdd_nodes_alive = nodes_alive
+    seconds = float(parts["seconds"]) if "seconds" in parts else None
+    return {
+        "size": size,
+        "solutions": solutions,
+        "nodes_created": nodes_created,
+        "nodes_alive": nodes_alive,
+        "ndd_nodes_created": ndd_nodes_created,
+        "ndd_nodes_alive": ndd_nodes_alive,
+        "bdd_nodes_created": bdd_nodes_created,
+        "bdd_nodes_alive": bdd_nodes_alive,
+        "seconds": seconds,
+    }
 
 
-def run_implementation(impl, size, workers):
+def run_implementation(impl, size, workers, timeout_sec=DEFAULT_TIMEOUT_SEC):
     cmd = impl.command_for(size, workers)
     env = impl.base_env()
-    result = execute_with_metrics(cmd, cwd=impl.workdir, env=env)
+    result = execute_with_metrics(cmd, cwd=impl.workdir, env=env, timeout_sec=timeout_sec)
+    if result["timed_out"]:
+        print(f"[timeout] {impl.name:10s} N={size:2d} time={timeout_sec:7.3f}s rss={result['max_rss']:>8d}KB")
+        return {
+            "implementation": impl.name,
+            "language": impl.language,
+            "size": size,
+            "time_sec": timeout_sec,
+            "max_rss_kb": result["max_rss"],
+            "nodes_created": TIMEOUT_SENTINEL_METRICS["nodes_created"],
+            "nodes_alive": TIMEOUT_SENTINEL_METRICS["nodes_alive"],
+            "ndd_nodes_created": TIMEOUT_SENTINEL_METRICS["ndd_nodes_created"],
+            "ndd_nodes_alive": TIMEOUT_SENTINEL_METRICS["ndd_nodes_alive"],
+            "bdd_nodes_created": TIMEOUT_SENTINEL_METRICS["bdd_nodes_created"],
+            "bdd_nodes_alive": TIMEOUT_SENTINEL_METRICS["bdd_nodes_alive"],
+            "solutions": TIMEOUT_SENTINEL_METRICS["solutions"],
+        }
     if result["returncode"] != 0:
         raise subprocess.CalledProcessError(
             result["returncode"],
@@ -342,28 +423,47 @@ def run_implementation(impl, size, workers):
             output=result["stdout"],
             stderr=result["stderr"],
         )
-    measured_size, solutions, nodes_created, nodes_alive, reported_seconds = parse_metrics(result["stdout"])
-    if measured_size != size:
-        raise RuntimeError(f"Implementation {impl.name} reported size {measured_size} but expected {size}")
-    time_sec = reported_seconds if reported_seconds is not None else result["elapsed"]
+    metrics = parse_metrics(result["stdout"])
+    if metrics["size"] != size:
+        raise RuntimeError(f"Implementation {impl.name} reported size {metrics['size']} but expected {size}")
+    time_sec = metrics["seconds"] if metrics["seconds"] is not None else result["elapsed"]
     max_rss = result["max_rss"]
     print(f"[run] {impl.name:10s} N={size:2d} time={time_sec:7.3f}s rss={max_rss:>8d}KB "
-          f"created={nodes_created} alive={nodes_alive}")
+          f"created={metrics['nodes_created']} alive={metrics['nodes_alive']} "
+          f"(bdd={metrics['bdd_nodes_created']}/{metrics['bdd_nodes_alive']} "
+          f"ndd={metrics['ndd_nodes_created']}/{metrics['ndd_nodes_alive']})")
     return {
         "implementation": impl.name,
         "language": impl.language,
         "size": size,
         "time_sec": time_sec,
         "max_rss_kb": max_rss,
-        "nodes_created": nodes_created,
-        "nodes_alive": nodes_alive,
-        "solutions": solutions,
+        "nodes_created": metrics["nodes_created"],
+        "nodes_alive": metrics["nodes_alive"],
+        "ndd_nodes_created": metrics["ndd_nodes_created"],
+        "ndd_nodes_alive": metrics["ndd_nodes_alive"],
+        "bdd_nodes_created": metrics["bdd_nodes_created"],
+        "bdd_nodes_alive": metrics["bdd_nodes_alive"],
+        "solutions": metrics["solutions"],
     }
 
 
 def write_results(rows, output_path):
-    RESULTS_DIR.mkdir(exist_ok=True)
-    fieldnames = ["implementation", "language", "size", "time_sec", "max_rss_kb", "nodes_created", "nodes_alive", "solutions"]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "implementation",
+        "language",
+        "size",
+        "time_sec",
+        "max_rss_kb",
+        "nodes_created",
+        "nodes_alive",
+        "ndd_nodes_created",
+        "ndd_nodes_alive",
+        "bdd_nodes_created",
+        "bdd_nodes_alive",
+        "solutions",
+    ]
     with output_path.open("w", newline="") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -376,20 +476,44 @@ def write_results(rows, output_path):
     print(f"[done] Results saved to {display_path}")
 
 
+def plot_results(output_path):
+    plot_script = ROOT / "scripts" / "plot_nqueens_results.py"
+    print(f"[plot] Generating plots from {output_path}")
+    subprocess.run(
+        [
+            "python3",
+            str(plot_script),
+            "--input",
+            str(output_path),
+            "--output",
+            str(output_path.parent),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+
+
 def parse_args():
+    default_targets = get_default_targets()
     parser = argparse.ArgumentParser(description="Run N-Queens benchmarks across multiple BDD implementations.")
     parser.add_argument(
         "--sizes",
         nargs="+",
         type=int,
-        default=list(range(4, 13)),
-        help="Board sizes to benchmark (default: 4 5 ... 12)",
+        default=DEFAULT_SIZES,
+        help="Board sizes to benchmark (default: 8 9 10 11 12)",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=0,
         help="Worker threads for Sylvan-based implementations (0 = autodetect, default: 0)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT_SEC,
+        help="Per-run timeout in seconds (default: 500)",
     )
     parser.add_argument(
         "--output",
@@ -400,8 +524,8 @@ def parse_args():
     parser.add_argument(
         "--targets",
         nargs="+",
-        default=["all"],
-        help="Which implementations to run (default: all). Example: --targets BuDDy Sylvan JSylvan",
+        default=default_targets,
+        help=f"Which implementations to run (default: {' '.join(default_targets)}). Example: --targets BuDDy Sylvan JSylvan",
     )
     return parser.parse_args()
 
@@ -451,6 +575,18 @@ def build_implementations():
             workdir=ROOT / "jdd",
         ),
         Implementation(
+            "ZDD",
+            "Java",
+            ensure_jdd,
+            lambda size, _: [
+                "java",
+                "-cp", "build/classes/java/main",
+                "jdd.examples.ZDDQueens",
+                str(size),
+            ],
+            workdir=ROOT / "jdd",
+        ),
+        Implementation(
             "JSylvan",
             "Java",
             ensure_jsylvan,
@@ -459,6 +595,7 @@ def build_implementations():
                 "-cp", "target/sylvan-1.0.0-SNAPSHOT.jar",
                 "jsylvan.examples.JSylvanNQueens",
                 "-w", str(workers),
+                "--memory-mb", str(JSYLVAN_MEMORY_MB),
                 str(size),
             ],
             workdir=ROOT / "jsylvan",
@@ -476,13 +613,49 @@ def build_implementations():
             workdir=ROOT / "NDD",
         ),
         Implementation(
-            "NDD-SoA",                     
+            "NDD-reuse",
+            "Java",
+            ensure_ndd_reuse,
+            lambda size, _: [
+                "java",
+                "-cp", str(ROOT / "NDD-reuse" / "target" / "ndd-1.0.1-jar-with-dependencies.jar"),
+                "application.nqueen.NDDSolution",
+                str(size),
+            ],
+            workdir=ROOT / "NDD-reuse",
+        ),
+        Implementation(
+            "NDD-SoA",
             "Java",                        
             ensure_ndd_soa,             
             lambda size, _: [
                 "java",
                 "-cp", str(ROOT / "NDD-SoA" / "target" / "ndd-1.0.1-jar-with-dependencies.jar"), 
                 "application.nqueen.NDDSolution", 
+                str(size),
+            ],
+            workdir=ROOT / "NDD-SoA",
+        ),
+        Implementation(
+            "NDD-SoA-BCDD",
+            "Java",
+            ensure_ndd_soa,
+            lambda size, _: [
+                "java",
+                "-cp", str(ROOT / "NDD-SoA" / "target" / "ndd-1.0.1-jar-with-dependencies.jar"),
+                "application.nqueen.ComplementedBddNDDSolution",
+                str(size),
+            ],
+            workdir=ROOT / "NDD-SoA",
+        ),
+        Implementation(
+            "NDD-SoA-FD-ZDD",
+            "Java",
+            ensure_ndd_soa,
+            lambda size, _: [
+                "java",
+                "-cp", str(ROOT / "NDD-SoA" / "target" / "ndd-1.0.1-jar-with-dependencies.jar"),
+                "application.nqueen.FiniteDomainZddNDDSolution",
                 str(size),
             ],
             workdir=ROOT / "NDD-SoA",
@@ -513,6 +686,10 @@ def build_implementations():
     ]
 
 
+def get_default_targets():
+    return [impl.name for impl in build_implementations() if impl.name not in EXCLUDED_DEFAULT_TARGETS]
+
+
 def main():
     args = parse_args()
     available_impls = build_implementations()
@@ -538,9 +715,10 @@ def main():
     rows = []
     for size in args.sizes:
         for impl in selected_impls:
-            rows.append(run_implementation(impl, size, args.workers))
+            rows.append(run_implementation(impl, size, args.workers, timeout_sec=args.timeout))
 
     write_results(rows, args.output)
+    plot_results(args.output)
 
 
 if __name__ == "__main__":

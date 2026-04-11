@@ -45,7 +45,7 @@ public class NodeTable {
     private final double QUICK_GROW_THRESHOLD = 0.1;
 
     /**
-     * Capacity of node arrays (nodeField, nodeEdgeStart, etc.).
+     * Capacity of node arrays (nodeField, nodeEdgeBlock, etc.).
      */
     private int nodeCapacity;
 
@@ -55,9 +55,24 @@ public class NodeTable {
     private int edgeCapacity;
 
     /**
+     * Capacity of block metadata arrays.
+     */
+    private int blockCapacity;
+
+    /**
      * Next node id to allocate (0=FALSE, 1=TRUE, 2+ = internal nodes).
      */
     private int nextNodeId;
+
+    /**
+     * Head of the free-node list, recycled at safe points only.
+     */
+    private int freeNodeHead;
+
+    /**
+     * Head of the retired-node list awaiting safe-point recycling.
+     */
+    private int retiredNodeHead;
 
     /**
      * Next free index in edge arrays.
@@ -65,49 +80,87 @@ public class NodeTable {
     private int edgeTop;
 
     /**
-     * Head of the free-node list (reused after gc).
+     * Next edge-block id to allocate (0 reserved as invalid).
      */
-    private int freeNodeHead = 0;
+    private int nextBlockId = 1;
+
+    /**
+     * Head of the free-block list, recycled at safe points only.
+     */
+    private int freeBlockHead;
+
+    /**
+     * Head of the retired-block list awaiting safe-point recycling.
+     */
+    private int retiredBlockHead;
+
+    /**
+     * Number of edges owned by currently live nodes.
+     */
+    private long liveEdgeCount;
 
     /**
      * Field index for each node (index 0/1 reserved for terminals).
+     * Public for direct array access in hot paths (NDD operations).
      */
-    private int[] nodeField;
+    public int[] nodeField;
 
     /**
-     * Start index in edge arrays for each node's edges.
+     * Stable edge-block id for each node.
      */
-    private int[] nodeEdgeStart;
+    public int[] nodeEdgeBlock;
 
     /**
      * Number of edges for each node.
      */
-    private int[] nodeEdgeCount;
+    public int[] nodeEdgeCount;
 
     /**
      * Next node in the same unique-table bucket (linked list).
      */
-    private int[] nodeNext;
+    int[] nodeNext;
 
     /**
      * Hash value for each node (for unique table lookup).
      */
-    private int[] nodeHash;
+    int[] nodeHash;
 
     /**
      * Reference count of each node.
      */
-    private int[] refCount;
+    public int[] refCount;
 
     /**
      * Target node id for each edge.
      */
-    private int[] edgeTarget;
+    public int[] edgeTarget;
 
     /**
      * BDD handle for each edge label.
      */
-    private int[] edgeLabel;
+    public int[] edgeLabel;
+
+    /**
+     * Whether each node slot is alive (not freed by gc).
+     * Separated from nodeField so that freed nodes' field/edge data remains readable
+     * by recursive NDD operations that hold stale references on the stack.
+     */
+    private boolean[] nodeAlive;
+
+    /**
+     * Physical start index in edge arrays for each block id.
+     */
+    private int[] blockStart;
+
+    /**
+     * Whether a block id is alive.
+     */
+    private boolean[] blockAlive;
+
+    /**
+     * Next block in the retired/free block list.
+     */
+    private int[] blockNext;
 
     /**
      * Construct the node table.
@@ -128,23 +181,38 @@ public class NodeTable {
 
         this.nodeCapacity = initialNodeCap;
         this.edgeCapacity = initialEdgeCap;
+        this.blockCapacity = initialNodeCap;
         this.nextNodeId = 2;
+        this.freeNodeHead = 0;
+        this.retiredNodeHead = 0;
         this.edgeTop = 0;
+        this.freeBlockHead = 0;
+        this.retiredBlockHead = 0;
+        this.liveEdgeCount = 0L;
 
         this.nodeField = new int[nodeCapacity];
-        this.nodeEdgeStart = new int[nodeCapacity];
+        this.nodeEdgeBlock = new int[nodeCapacity];
         this.nodeEdgeCount = new int[nodeCapacity];
         this.nodeNext = new int[nodeCapacity];
         this.nodeHash = new int[nodeCapacity];
         this.refCount = new int[nodeCapacity];
         this.edgeTarget = new int[edgeCapacity];
         this.edgeLabel = new int[edgeCapacity];
+        this.nodeAlive = new boolean[nodeCapacity];
+        this.blockStart = new int[blockCapacity];
+        this.blockAlive = new boolean[blockCapacity];
+        this.blockNext = new int[blockCapacity];
 
         Arrays.fill(nodeField, -1);
         nodeField[0] = Integer.MAX_VALUE;
         nodeField[1] = Integer.MAX_VALUE;
+        nodeAlive[0] = true;
+        nodeAlive[1] = true;
         refCount[0] = Integer.MAX_VALUE;
         refCount[1] = Integer.MAX_VALUE;
+
+        // NOTE: Bug 3 fix (pre-GC callback) requires jdd.bdd.NodeTable.setPreGCCallback(),
+        // which is not available in the jdd-111 JAR. Skipped for standalone NDD-SoA build.
     }
 
     /**
@@ -196,7 +264,7 @@ public class NodeTable {
      * @return The start index in edge arrays.
      */
     public int getEdgeStart(int nodeId) {
-        return nodeEdgeStart[nodeId];
+        return blockStart[nodeEdgeBlock[nodeId]];
     }
 
     /**
@@ -229,6 +297,14 @@ public class NodeTable {
         return edgeLabel[edgeIndex];
     }
 
+    public int getEdgeTarget(int nodeId, int offset) {
+        return edgeTarget[blockStart[nodeEdgeBlock[nodeId]] + offset];
+    }
+
+    public int getEdgeLabel(int nodeId, int offset) {
+        return edgeLabel[blockStart[nodeEdgeBlock[nodeId]] + offset];
+    }
+
     /**
      * Create or reuse an NDD node with given edges.
      *
@@ -252,25 +328,24 @@ public class NodeTable {
      * @return The node id (new or reused).
      */
     public int mk(int field, int[] targets, int[] labels, int offset, int length) {
+        if (length == 1 && NDD.isUniverseEdgeLabel(field, labels[offset])) {
+            NDD.derefLabel(labels[offset]);
+            return targets[offset];
+        }
+
         UniqueTable table = nodeTable.get(field);
         int hash = computeHash(targets, labels, offset, length);
         int nodeId = table.lookup(hash, targets, labels, offset, length, this);
 
         if (nodeId != 0) {
-            for (int i = 0; i < length; i++) bddEngine.deref(labels[offset + i]);
+            for (int i = 0; i < length; i++) NDD.derefLabel(labels[offset + i]);
             return nodeId;
         }
 
         if (currentSize >= nddTableSize) gcOrGrow();
-        int id;
-        if (freeNodeHead != 0) {
-            id = freeNodeHead;
-            freeNodeHead = nodeNext[id]; 
-        } else {
-            id = nextNodeId++;
-            totalCreated++;
-            ensureNodeCapacity(id);
-        }
+        int id = allocateNode();
+        totalCreated++;
+        int blockId = allocateBlock();
         ensureEdgeCapacity(length);
 
         int start = edgeTop;
@@ -281,15 +356,19 @@ public class NodeTable {
         }
 
         nodeField[id] = field;
-        nodeEdgeStart[id] = start;
+        nodeEdgeBlock[id] = blockId;
         nodeEdgeCount[id] = length;
         nodeHash[id] = hash;
         nodeNext[id] = 0;
         refCount[id] = 0;
+        nodeAlive[id] = true;
+        blockStart[blockId] = start;
+        blockAlive[blockId] = true;
+        liveEdgeCount += length;
 
         for (int i = 0; i < length; i++) {
             int target = targets[offset + i];
-            if (target > 1 && nodeField[target] >= 0 && refCount[target] != Integer.MAX_VALUE) {
+            if (target > 1 && nodeAlive[target] && refCount[target] != Integer.MAX_VALUE) {
                 refCount[target] += 1;
             }
         }
@@ -310,14 +389,52 @@ public class NodeTable {
         while (newCap <= id) newCap <<= 1;
 
         nodeField = Arrays.copyOf(nodeField, newCap);
-        nodeEdgeStart = Arrays.copyOf(nodeEdgeStart, newCap);
+        nodeEdgeBlock = Arrays.copyOf(nodeEdgeBlock, newCap);
         nodeEdgeCount = Arrays.copyOf(nodeEdgeCount, newCap);
         nodeNext = Arrays.copyOf(nodeNext, newCap);
         nodeHash = Arrays.copyOf(nodeHash, newCap);
         refCount = Arrays.copyOf(refCount, newCap);
+        nodeAlive = Arrays.copyOf(nodeAlive, newCap);
 
         Arrays.fill(nodeField, nodeCapacity, newCap, -1);
         nodeCapacity = newCap;
+    }
+
+    private void ensureBlockCapacity(int blockId) {
+        if (blockId < blockCapacity) return;
+        int newCap = blockCapacity;
+        while (newCap <= blockId) newCap <<= 1;
+        blockStart = Arrays.copyOf(blockStart, newCap);
+        blockAlive = Arrays.copyOf(blockAlive, newCap);
+        blockNext = Arrays.copyOf(blockNext, newCap);
+        blockCapacity = newCap;
+    }
+
+    private int allocateBlock() {
+        int blockId;
+        if (freeBlockHead != 0) {
+            blockId = freeBlockHead;
+            freeBlockHead = blockNext[blockId];
+        } else {
+            blockId = nextBlockId++;
+            ensureBlockCapacity(blockId);
+        }
+        blockNext[blockId] = 0;
+        blockAlive[blockId] = true;
+        return blockId;
+    }
+
+    private int allocateNode() {
+        int nodeId;
+        if (freeNodeHead != 0) {
+            nodeId = freeNodeHead;
+            freeNodeHead = nodeNext[nodeId];
+        } else {
+            nodeId = nextNodeId++;
+            ensureNodeCapacity(nodeId);
+        }
+        nodeNext[nodeId] = 0;
+        return nodeId;
     }
 
     /**
@@ -339,7 +456,9 @@ public class NodeTable {
      */
     private void gcOrGrow() {
         gc();
-        if (nddTableSize - currentSize <= nddTableSize * QUICK_GROW_THRESHOLD) grow();
+        if (nddTableSize - currentSize <= nddTableSize * QUICK_GROW_THRESHOLD) {
+            grow();
+        }
         NDD.clearCaches();
     }
 
@@ -351,38 +470,44 @@ public class NodeTable {
 
         IntQueue queue = new IntQueue((int) Math.max(16, currentSize));
         for (int i = 2; i < nextNodeId; i++) {
-            if (nodeField[i] >= 0 && refCount[i] == 0) queue.add(i);
+            if (nodeAlive[i] && refCount[i] == 0) queue.add(i);
         }
 
         while (!queue.isEmpty()) {
             int deadNode = queue.poll();
-            int start = nodeEdgeStart[deadNode];
+            int blockId = nodeEdgeBlock[deadNode];
+            int start = blockStart[blockId];
             int count = nodeEdgeCount[deadNode];
 
             for (int i = 0; i < count; i++) {
                 int target = edgeTarget[start + i];
-                if (target <= 1 || nodeField[target] < 0) continue;
+                if (target <= 1 || !nodeAlive[target]) continue;
                 if (refCount[target] != Integer.MAX_VALUE) {
                     int updated = --refCount[target];
                     if (updated == 0) queue.add(target);
                 }
             }
 
-            for (int i = 0; i < count; i++) bddEngine.deref(edgeLabel[start + i]);
+            for (int i = 0; i < count; i++) NDD.derefLabel(edgeLabel[start + i]);
 
             nodeTable.get(nodeField[deadNode]).remove(deadNode, this);
-            nodeField[deadNode] = -1;
-            nodeEdgeStart[deadNode] = 0;
-            nodeEdgeCount[deadNode] = 0;
+            // DON'T clear nodeField/nodeEdgeBlock/nodeEdgeCount — recursive operations
+            // on the stack may hold stale references to this node and still need to read
+            // its field and edge data (matching OOP behavior where freed Java objects persist).
+            nodeAlive[deadNode] = false;
             nodeHash[deadNode] = 0;
             refCount[deadNode] = 0;
             currentSize--;
-            
-            nodeNext[deadNode] = freeNodeHead;
-            freeNodeHead = deadNode;
+            blockAlive[blockId] = false;
+            liveEdgeCount -= count;
+            nodeNext[deadNode] = retiredNodeHead;
+            retiredNodeHead = deadNode;
+            blockNext[blockId] = retiredBlockHead;
+            retiredBlockHead = blockId;
         }
 
-        compactEdges();
+        // compactEdges() is NOT safe here: recursive NDD operations may cache
+        // resolved physical starts in local variables that would become stale.
         NDD.forEachTemporarilyProtect(this::deref);
     }
 
@@ -395,7 +520,7 @@ public class NodeTable {
         int[] newEdgeLabel = new int[newEdgeTarget.length];
 
         for (int nodeId = 2; nodeId < nextNodeId; nodeId++) {
-            if (nodeField[nodeId] < 0) continue;
+            if (!nodeAlive[nodeId]) continue;
             int count = nodeEdgeCount[nodeId];
             if (newEdgeTop + count > newEdgeTarget.length) {
                 int newCap = newEdgeTarget.length;
@@ -403,10 +528,11 @@ public class NodeTable {
                 newEdgeTarget = Arrays.copyOf(newEdgeTarget, newCap);
                 newEdgeLabel = Arrays.copyOf(newEdgeLabel, newCap);
             }
-            int oldStart = nodeEdgeStart[nodeId];
+            int blockId = nodeEdgeBlock[nodeId];
+            int oldStart = blockStart[blockId];
             System.arraycopy(edgeTarget, oldStart, newEdgeTarget, newEdgeTop, count);
             System.arraycopy(edgeLabel, oldStart, newEdgeLabel, newEdgeTop, count);
-            nodeEdgeStart[nodeId] = newEdgeTop;
+            blockStart[blockId] = newEdgeTop;
             newEdgeTop += count;
         }
 
@@ -414,6 +540,54 @@ public class NodeTable {
         edgeLabel = newEdgeLabel;
         edgeTop = newEdgeTop;
         edgeCapacity = newEdgeTarget.length;
+    }
+
+    /**
+     * Counter to throttle compaction checks (avoid scanning all nodes every operation).
+     */
+    private int compactCheckCounter = 0;
+    private static final int COMPACT_CHECK_INTERVAL = 1000;
+
+    /**
+     * Compact edges if fragmentation ratio exceeds threshold.
+     * Safe to call only when no recursive NDD operation is in progress.
+     * Throttled to check only every COMPACT_CHECK_INTERVAL calls.
+     */
+    public void compactEdgesIfNeeded() {
+        if (++compactCheckCounter < COMPACT_CHECK_INTERVAL) {
+            recycleRetiredSlotsAtSafePoint();
+            return;
+        }
+        compactCheckCounter = 0;
+        if (edgeTop > 16384 && liveEdgeCount * 2 < edgeTop) {
+            compactEdges();
+        }
+        recycleRetiredSlotsAtSafePoint();
+    }
+
+    /**
+     * Force compaction at a caller-provided safe point.
+     */
+    public void compactEdgesAtSafePoint() {
+        if (liveEdgeCount < edgeTop) {
+            compactEdges();
+        }
+        recycleRetiredSlotsAtSafePoint();
+    }
+
+    private void recycleRetiredSlotsAtSafePoint() {
+        while (retiredNodeHead != 0) {
+            int nodeId = retiredNodeHead;
+            retiredNodeHead = nodeNext[nodeId];
+            nodeNext[nodeId] = freeNodeHead;
+            freeNodeHead = nodeId;
+        }
+        while (retiredBlockHead != 0) {
+            int blockId = retiredBlockHead;
+            retiredBlockHead = blockNext[blockId];
+            blockNext[blockId] = freeBlockHead;
+            freeBlockHead = blockId;
+        }
     }
 
     /**
@@ -431,7 +605,7 @@ public class NodeTable {
      */
     public int ref(int nodeId) {
         if (nodeId <= 1) return nodeId;
-        if (nodeField[nodeId] >= 0 && refCount[nodeId] != Integer.MAX_VALUE) {
+        if (nodeAlive[nodeId] && refCount[nodeId] != Integer.MAX_VALUE) {
             refCount[nodeId] += 1;
         }
         return nodeId;
@@ -453,7 +627,7 @@ public class NodeTable {
      */
     public void deref(int nodeId) {
         if (nodeId <= 1) return;
-        if (nodeField[nodeId] >= 0 && refCount[nodeId] != Integer.MAX_VALUE) {
+        if (nodeAlive[nodeId] && refCount[nodeId] != Integer.MAX_VALUE) {
             refCount[nodeId] -= 1;
         }
     }
@@ -542,7 +716,7 @@ public class NodeTable {
         private boolean arraysMatch(int nodeId, int[] targets, int[] labels, int offset, int length, NodeTable table) {
             int count = table.nodeEdgeCount[nodeId];
             if (count != length) return false;
-            int start = table.nodeEdgeStart[nodeId];
+            int start = table.blockStart[table.nodeEdgeBlock[nodeId]];
             for (int i = 0; i < length; i++) {
                 if (table.edgeTarget[start + i] != targets[offset + i]) return false;
                 if (table.edgeLabel[start + i] != labels[offset + i]) return false;

@@ -9,13 +9,33 @@ public class NDDSolution {
         final double solutions;
         final long nodesCreated;
         final long nodesAlive;
+        final long nddNodesCreated;
+        final long nddNodesAlive;
+        final long bddNodesCreated;
+        final long bddNodesAlive;
         final double seconds;
+        final NDD.LabelMode mode;
 
-        Result(double solutions, long nodesCreated, long nodesAlive, double seconds) {
+        Result(
+            double solutions,
+            long nodesCreated,
+            long nodesAlive,
+            long nddNodesCreated,
+            long nddNodesAlive,
+            long bddNodesCreated,
+            long bddNodesAlive,
+            double seconds,
+            NDD.LabelMode mode
+        ) {
             this.solutions = solutions;
             this.nodesCreated = nodesCreated;
             this.nodesAlive = nodesAlive;
+            this.nddNodesCreated = nddNodesCreated;
+            this.nddNodesAlive = nddNodesAlive;
+            this.bddNodesCreated = bddNodesCreated;
+            this.bddNodesAlive = bddNodesAlive;
             this.seconds = seconds;
+            this.mode = mode;
         }
     }
 
@@ -84,14 +104,16 @@ public class NDDSolution {
     }
 
     // N is the number of queens, fieldNum is the number of fields in NDD library.
-    private static Result solve(int n) {
+    private static Result solve(int n, NDD.LabelMode mode) {
         long startTimeNanos = System.nanoTime();
+        jdd.bdd.NodeTable.mkCount = 0;
 
         // init NDD library
-        NDD.initNDD(NDD_TABLE_SIZE, 1 + Math.max(1000, (int) (Math.pow(4.4, n - 6)) * 1000), 10000);
+        NDD.initNDD(NDD_TABLE_SIZE, 1 + Math.max(1000, (int) (Math.pow(4.4, n - 6)) * 1000), 10000, mode);
 
         // declare ndd fields
         declareFields(n);
+        NDD.generateFields();
 
         int[] orBatch = new int[n];
         int[][] impBatch = new int[n][n];
@@ -123,12 +145,29 @@ public class NDDSolution {
             }
         }
         double solutions = NDD.satCount(queen);
-        long nodesCreated = NDD.getTotalCreated();
+        long nddNodesCreated = NDD.getTotalCreated();
+        long bddNodesCreated = NDD.getLabelTotalCreated();
         NDD.deref(queen);
         double seconds = (System.nanoTime() - startTimeNanos) / 1_000_000_000.0;
         NDD.gc();
-        long nodesAlive = NDD.getNodeCount();
-        return new Result(solutions, nodesCreated, nodesAlive, seconds);
+        NDD.gcLabelEngine();
+        long nddNodesAlive = NDD.getNodeCount();
+        long bddNodesAlive = NDD.getLabelNodeCount();
+        return new Result(
+            solutions,
+            nddNodesCreated + bddNodesCreated,
+            nddNodesAlive + bddNodesAlive,
+            nddNodesCreated,
+            nddNodesAlive,
+            bddNodesCreated,
+            bddNodesAlive,
+            seconds,
+            mode
+        );
+    }
+
+    private static Result solve(int n) {
+        return solve(n, NDD.LabelMode.BOOLEAN_BDD);
     }
 
     /**
@@ -141,14 +180,46 @@ public class NDDSolution {
 
     public static void main(String[] args) {
         if (args.length == 0) {
-            System.err.println("Usage: NDDSolution <N> [<N> ...]");
+            System.err.println("Usage: NDDSolution [--bcdd | --finite-domain-zdd] <N> [<N> ...]");
             System.exit(1);
         }
-        for (String arg : args) {
+
+        NDD.LabelMode mode = NDD.LabelMode.BOOLEAN_BDD;
+        int startArg = 0;
+        if ("--bcdd".equals(args[0])) {
+            mode = NDD.LabelMode.COMPLEMENTED_BDD;
+            startArg = 1;
+        } else if ("--finite-domain-zdd".equals(args[0])) {
+            mode = NDD.LabelMode.FINITE_DOMAIN_ZDD;
+            startArg = 1;
+        }
+
+        if (startArg >= args.length) {
+            System.err.println("Usage: NDDSolution [--bcdd | --finite-domain-zdd] <N> [<N> ...]");
+            System.exit(1);
+        }
+
+        for (int i = startArg; i < args.length; i++) {
+            String arg = args[i];
             int n = Integer.parseInt(arg);
-            Result result = solve(n);
-            System.out.printf("NQUEENS_METRICS n=%d solutions=%.0f nodes_created=%d nodes_alive=%d seconds=%.6f%n",
-                n, result.solutions, result.nodesCreated, result.nodesAlive, result.seconds);
+            Result result = solve(n, mode);
+            System.out.printf(
+                "NQUEENS_METRICS n=%d solutions=%.0f nodes_created=%d nodes_alive=%d "
+                    + "ndd_nodes_created=%d ndd_nodes_alive=%d "
+                    + "bdd_nodes_created=%d bdd_nodes_alive=%d "
+                    + "seconds=%.6f mode=%s implementation=%s%n",
+                n,
+                result.solutions,
+                result.nodesCreated,
+                result.nodesAlive,
+                result.nddNodesCreated,
+                result.nddNodesAlive,
+                result.bddNodesCreated,
+                result.bddNodesAlive,
+                result.seconds,
+                result.mode,
+                result.mode
+            );
             //System.out.printf(Solution(n));
         }
     }

@@ -1,0 +1,5 @@
+application/nqueen/ComplementedBddNDDSolutionTest.class
+org/ants/jndd/diagram/FiniteDomainNDDTest.class
+application/nqueen/NDDSolutionTest.class
+application/nqueen/FiniteDomainZddNDDSolutionTest.class
+org/ants/jndd/diagram/NDDLabelModeTest.class
