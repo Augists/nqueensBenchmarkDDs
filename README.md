@@ -1,56 +1,47 @@
-# Benchmark on all version of BDD and NDD on NQueens
+# NQueens Benchmark for BDD and NDD libraries 
 
 > [!NOTE]
-> **B**inary **D**ecision **D**iagram
-> 
+> **N**etwork **D**ecision **D**iagram
+> 1. NDD-original
+> 2. NDD-reuse
+> 3. NDD
 > - C
 > 1. BuDDy
 > 2. CUDD
-> 3. Sylvan
 > 
 > - Java
-> 1. jdd
+> 1. JDD
+> 2. JavaBDD??
+>
+> - [C#](https://github.com/microsoft/DecisionDiagrams)
+> 1. DecisionDiagrams (BDDNode)
+> 2. DecisionDiagrams (CBDDNode)
+>
+> - Parallel (Java)
+> 1. Sylvan
 > 2. JSylvan
->
-> - C#
-> 1. DecisionDiagrams-BDD
-> 2. DecisionDiagrams-CBDD
->
-> **N**etwork **D**ecision **D**iagram
-> 
-> - Java
-> 1. NDD
-> 2. NDD-reuse
-> 3. NDD-SoA
+>    
+
 
 ## results
 
 ![](results/nqueens_time_sec.png)
 
-![](results/nqueens_time_sec_log.png)
-
 ![](results/nqueens_max_rss_kb.png)
 
-![](results/nqueens_max_rss_kb_log.png)
 
-![](results/nqueens_nodes_created.png)
-
-![](results/nqueens_nodes_alive.png)
-
-
-
-## How to run benchmark
+## How to run the benchmark
 
 ### Dependency
 
-Please install build tools(pkg-config and GMP) before run this script. Here takes Debian/Ubuntu as an example:
+Install build tools (pkg-config and GMP). Consider Debian/Ubuntu as an example:
 
 ```bash
 sudo apt update
 sudo apt install build-essential pkg-config libgmp-dev openjdk-17-jdk python3 python3-pip
 ```
 
-Sylvan/JSylvan will build failed without pkg-config or libgmp-dev.
+Sylvan/JSylvan build will fail without pkg-config or libgmp-dev.
 
 ### Steps
 
@@ -58,7 +49,7 @@ Sylvan/JSylvan will build failed without pkg-config or libgmp-dev.
    ```bash
    git clone --recurse-submodules git@github.com:Augists/nqueensBenchmarkDDs.git
    ```
-   if forget `--recurse-submodules`，run the script below after clone:
+   if you clone without `--recurse-submodules`，run the script below after clone:
    ```bash
    git submodule update --init --recursive
    ```
