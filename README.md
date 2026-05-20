@@ -1,21 +1,22 @@
 # NQueens Benchmark for BDD and NDD libraries 
 
 > [!NOTE]
-> **N**etwork **D**ecision **D**iagram
+> - [**N**etwork **D**ecision **D**iagram]()
 > 1. NDD-original
 > 2. NDD-reuse
 > 3. NDD
+>    
 > - C
-> 1. BuDDy
-> 2. CUDD
+> 1. [BuDDy]()
+> 2. [CUDD]()
 > 
 > - Java
 > 1. JDD
 > 2. JavaBDD??
 >
-> - [C#](https://github.com/microsoft/DecisionDiagrams)
-> 1. DecisionDiagrams (BDDNode)
-> 2. DecisionDiagrams (CBDDNode)
+> - C#
+> 1. [DecisionDiagrams](https://github.com/microsoft/DecisionDiagrams) (BDDNode)
+> 2. [DecisionDiagrams](https://github.com/microsoft/DecisionDiagrams) (CBDDNode)
 >
 > - Parallel (Java)
 > 1. Sylvan
